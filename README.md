@@ -1,0 +1,2 @@
+# LDA_code_political_communication
+使用R语言做推文的LDA
