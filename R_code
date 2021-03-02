@@ -1,0 +1,218 @@
+require(readr)
+require(tm)
+require(data.table)
+require(dplyr)
+require(stringr)
+require(jiebaR)
+require(udpipe)
+library(janeaustenr)
+require(tidytext)
+library(topicmodels)
+require(ggplot2)
+require(tidyr)
+library(lda)
+require(topicmodels)
+require(LDAvis)
+require(wordcloud2)
+require(webshot)
+require(htmlwidgets)
+require(servr)
+library(tidyverse)
+require(purrr)
+library(stopwords)
+require(ramify)
+library(Rwordseg)
+require(RColorBrewer)
+library(SnowballC) # for stemming
+library(jiebaR)
+library(quanteda)
+library("quanteda", warn.conflicts = FALSE)
+library(servr)
+library(widyr)
+library(twtools)
+library(igraph)
+library(ggplot2)
+library(ggraph)
+library(rmarkdown)
+install.packages("ldatuning")
+library(ldatuning)
+
+########以上安装加载包
+
+###停用词
+
+stop_words
+
+
+#读取数据
+raw_txt<-read.csv("clubhouse.csv")#原始数据
+
+tweets<-data_frame(id=raw_txt$id_str,text=raw_txt$text) %>%
+  unnest(text)                      #文本
+tweets
+
+reg_words <- "([^A-Za-z_\\d#@']|'(?![A-Za-z_\\d#@]))"
+
+tidy_tweets <- tweets %>%
+  filter(!str_detect(text, "^RT")) %>%
+  mutate(text = str_replace_all(text, "https://t.co/[A-Za-z\\d]+|http://[A-Za-z\\d]+|&amp;|&lt;|&gt;|RT|https", "")) %>%
+  unnest_tokens(word, text, token = "regex", pattern = reg_words) %>%
+  filter(!word %in% stop_words$word,
+         str_detect(word, "[a-z]"),
+         substr(word, 1, 1) != '@',
+         
+         
+         )
+tidy_tweets
+
+
+head(tidy_tweets)
+
+tidy_tweets%>%         ####给词计数
+  count(word,sort = T)
+
+##再清洗
+
+
+tidy_tweets <- tidy_tweets %>%
+  filter(!str_detect(tidy_tweets$word, "^RT")) %>%
+  mutate(text = str_replace_all(text, "https://t.co/[A-Za-z\\d]+|http://[A-Za-z\\d]+|&amp;|&lt;|&gt;|RT|https", "")) %>%
+  unnest_tokens(word, text, token = "regex", pattern = reg_words) %>%
+  mutate(next_word = lead(word)) %>%
+  filter(!word %in% stop_words$word, # remove stop words
+         !next_word %in% stop_words$word, # remove stop words
+         substr(word, 1, 1) != '@', # remove user handles to protect privacy
+         substr(next_word, 1, 1) != '@', # remove user handles to protect privacy
+         substr(word, 1, 1) != '#', # remove hashtags
+         substr(next_word, 1, 1) != '#',
+         str_detect(word, "[a-z]"), # remove words containing ony numbers or symbols
+         str_detect(next_word, "[a-z]")) %>% # remove words containing ony numbers or symbols
+
+
+tidy_tweets(tidy_tweets) 
+
+
+
+###词共现分析
+word_pairs<-tidy_tweets%>%
+  pairwise_count(word,id,sort=T,upper=F)
+word_pairs
+
+#相关系数
+
+key_cors<-tidy_tweets%>%
+  group_by(word)%>%
+  filter(n()>200)%>%
+  pairwise_cor(word,id,sort =T,upper =F)
+key_cors
+
+
+###以上，跑出来了结果
+
+###写入csv
+
+write.csv(key_cors,file = "相关系数.csv",row.names = T)
+
+###以下对相关系数进行可视化
+
+set.seed(12345)
+
+key_cors%>%
+  filter(correlation> 0.4,correlation<1)%>%
+  graph_from_data_frame()%>%
+  ggraph(layout = "fr")+
+  geom_edge_link(aes(edge_alpha=correlation,edge_width=correlation),
+                 edge_colour= "royalblue")+
+  geom_node_point(size = 2)+
+  geom_node_text(aes(label = name),repel = T,
+                 point.padding = unit(0.2,"lines"))+
+  theme_void()
+
+ ##以上，跑出来可视化的结果了
+
+
+
+#######以下做LDA主题模型
+
+
+word_counts<-tidy_tweets%>%
+  anti_join(stop_words)%>%
+  count(id,word,sort= T)%>%
+  ungroup()
+word_counts
+
+###转为词频文档ti-idf 矩阵
+dtm<-word_counts%>%
+  cast_dfm(id,word,n)
+dtm
+
+
+
+##计算最佳topics数量
+
+result <- FindTopicsNumber(
+  dtm,
+  topics = seq(from = 2, to = 15, by = 1),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  mc.cores = 2L,
+  verbose = TRUE
+)
+
+result
+
+FindTopicsNumber_plot(result)###画出来最佳数量的曲线图
+
+###主题建模
+
+tweet_lda<-LDA(dtm,k=8,control = list(seed = 1234))
+tweet_lda
+
+##以上，运行完毕，建立20个topics k=20
+
+###解释主题模型
+tidy_lda<-tidy(tweet_lda)
+tidy_lda
+
+
+##查看每个主题的词
+top_terms<-tidy_lda%>%
+  group_by(topic)%>%
+  top_n(15,beta)%>%
+  ungroup()%>%
+  arrange(topic,-beta)
+top_terms
+
+
+###可视化主题    /其实也可以不用下面的代码
+##把上面的top_terms导出来在其他的工具里统计画图
+
+top_terms%>%
+  mutate(term = reorder(term,beta))%>%
+  group_by(topic,term)%>%
+  arrange(desc(beta))%>%
+  ungroup()%>%
+  mutate(term =factor(paste(term,topic,sep = "_"),
+                      levels = rev(paste(term,topic,sep = "_"))))%>%
+  ggplot(aes(term,beta,fill=as.factor(topic)))+
+  geom_col(show.legend = F)+
+  coord_flip()+
+  scale_x_discrete(labels = function(x) gsub("_.+$","",x))+
+  labs(title = "每个话题中出现最多的15个词",
+       x=NULL,y=expression(beta))+
+  facet_wrap(~topic,ncol = 4,scales = "free")
+top_terms
+  
+  
+####主题聚类结果写进csv
+write.csv(top_terms,file = "十个主题及聚类词.csv",row.names = F)
+  
+  
+  
+  
+
+
+
+
+
