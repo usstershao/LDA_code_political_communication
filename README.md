@@ -8,4 +8,5 @@
 
 #网络分析
 使用的Gephi
-
+#数据
+clubhouse数据已上传，csv格式
